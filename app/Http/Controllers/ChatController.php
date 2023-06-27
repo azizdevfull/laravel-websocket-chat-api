@@ -2,16 +2,17 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
-use App\Models\User;
 use App\Models\Chat;
-use App\Http\Requests\Chat\CreateChatRequest;
-use App\Http\Requests\Chat\SendTextMessageRequest;
+use App\Models\User;
 use App\Models\ChatMessages;
+use Illuminate\Http\Request;
 use App\Events\ChatMessageSent;
 use App\Events\ChatMessageStatus;
+use App\Notifications\NewMessage;
 use App\Http\Resources\ChatResource;
 use App\Http\Resources\MassageResource;
+use App\Http\Requests\Chat\CreateChatRequest;
+use App\Http\Requests\Chat\SendTextMessageRequest;
 
 class ChatController extends Controller
 {
@@ -46,6 +47,28 @@ class ChatController extends Controller
         ],200);
     }
 
+    // public function sendTextMessage(SendTextMessageRequest $request){
+    //     $chat = Chat::find($request->chat_id);
+    //     if($chat->isParticipant($request->user()->id)){
+    //     $message = ChatMessages::create([
+    //         'message' => $request->message,
+    //         'chat_id' => $request->chat_id,
+    //         'user_id' => $request->user()->id,
+    //         'data' => json_encode(['seenBy'=>[],'status'=>'sent']) //status = sent, delivered,seen
+    //     ]);
+    //     $success = true;
+    //     $message =  new MassageResource($message);
+    //     return response()->json( [
+    //         "message"=> $message,
+    //         "success"=> $success
+    //     ],200);
+    //     }else{
+    //     return response()->json([
+    //         'message' => 'not found'
+    //     ], 404);
+    //     }
+    // }
+
     public function sendTextMessage(SendTextMessageRequest $request){
         $chat = Chat::find($request->chat_id);
         if($chat->isParticipant($request->user()->id)){
@@ -53,10 +76,20 @@ class ChatController extends Controller
             'message' => $request->message,
             'chat_id' => $request->chat_id,
             'user_id' => $request->user()->id,
-            'data' => json_encode(['seenBy'=>[],'status'=>'sent']) //status = sent, delivered,seen
+            'data' => json_encode(['seenBy'=>[],'status'=>'sent']) //sent, delivered,seen
         ]);
         $success = true;
         $message =  new MassageResource($message);
+       
+      // broadcast the message to all users 
+        broadcast(new ChatMessageSent($message));
+
+        foreach($chat->participants as $participant){
+            if($participant->id != $request->user()->id){
+                $participant->notify(new NewMessage($message));
+            }
+        }
+        
         return response()->json( [
             "message"=> $message,
             "success"=> $success
@@ -68,15 +101,12 @@ class ChatController extends Controller
         }
     }
 
-    public function messageStatus(Request $request,$id){
-        $message = ChatMessages::find($id);
+    public function messageStatus(Request $request,ChatMessages $message){
         if($message->chat->isParticipant($request->user()->id)){
             $messageData = json_decode($message->data);
             array_push($messageData->seenBy,$request->user()->id);
             $messageData->seenBy = array_unique($messageData->seenBy);
-            
-           //Check if all participant have seen or not
-           if(count($message->chat->participants)-1 < count( $messageData->seenBy)){
+            if(count($message->chat->participants)-1 < count( $messageData->seenBy)){
                 $messageData->status = 'delivered';
             }else{
                 $messageData->status = 'seen';    
@@ -84,6 +114,9 @@ class ChatController extends Controller
             $message->data = json_encode($messageData);
             $message->save();
             $message =  new MassageResource($message);
+            
+            //triggering the event
+            broadcast(new ChatMessageStatus($message));
 
             return response()->json([
                 'message' =>  $message,

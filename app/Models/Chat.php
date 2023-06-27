@@ -46,4 +46,6 @@ class Chat extends Model
 
         return $this;
     }
+
+    
 }
